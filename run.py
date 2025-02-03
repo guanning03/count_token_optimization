@@ -74,37 +74,10 @@ def train(config: RunConfig):
     unet, vae, text_encoder, scheduler, tokenizer = pipeline.unet, pipeline.vae, pipeline.text_encoder, pipeline.scheduler, pipeline.tokenizer
 
     #  Extend tokenizer and add a discriminative token ###
-    class_infer = int(class_name.split()[0])
+    class_infer = int(float(class_name.split()[0]))
     prompt_suffix = " ".join(class_name.lower().split("_"))
 
-    # ## Add the placeholder token in tokenizer
-    # num_added_tokens = tokenizer.add_tokens(config.placeholder_token)
-    # if num_added_tokens == 0:
-    #     raise ValueError(
-    #         f"The tokenizer already contains the token {config.placeholder_token}. Please pass a different"
-    #         " `placeholder_token` that is not already in the tokenizer."
-    #     )
-    #
-    # ## Get token ids for our placeholder and initializer token.
-    # # This code block will complain if initializer string is not a single token
-    # ## Convert the initializer_token, placeholder_token to ids
-    # token_ids = tokenizer.encode(config.initializer_token, add_special_tokens=False)
-    # # Check if initializer_token is a single token or a sequence of tokens
-    # if len(token_ids) > 1:
-    #     raise ValueError("The initializer token must be a single token.")
-    #
-    # initializer_token_id = token_ids[0]
-    # placeholder_token_id = tokenizer.convert_tokens_to_ids(config.placeholder_token)
-    #
-    # # we resize the token embeddings here to account for placeholder_token
-    # text_encoder.resize_token_embeddings(len(tokenizer))
-    #
-    # #  Initialise the newly added placeholder token
-    # token_embeds = text_encoder.get_input_embeddings().weight.data
-    # token_embeds[placeholder_token_id] = token_embeds[initializer_token_id]
     placeholder_token_id = tokenizer.encode(config.placeholder_token, add_special_tokens=False)[0]
-
-    # Define dataloades
 
     def collate_fn(examples):
         input_ids = [example["instance_prompt_ids"] for example in examples]
@@ -814,7 +787,8 @@ if __name__ == "__main__":
     config = pyrallis.parse(config_class=RunConfig)
     print(str(config).replace(" ", '\n'))
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" 
+    print(f"Using device: {device}")
 
     # Check the arguments
     if config.train:

@@ -1,4 +1,4 @@
-name: objects_count_optimization
+name: tkopt
 channels:
   - anaconda
   - conda-forge
@@ -186,7 +186,7 @@ dependencies:
     - certifi==2023.11.17
     - cffi==1.16.0
     - click==8.1.7
-    - clip==1.0
+    # - clip==1.0
     - cmake==3.28.3
     - colorama==0.4.6
     - comm==0.1.2

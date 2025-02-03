@@ -13,6 +13,7 @@ from diffusers.pipelines import AutoPipelineForText2Image
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
 
+device = "cuda" 
 
 def numpy_to_pil(images):
     """
@@ -46,10 +47,10 @@ def prepare_counting_model(config: RunConfig):
     match config.counting_model_name:
         case "clip":
             from transformers import CLIPModel
-            model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").cuda()
+            model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
         case "clip-count":
             from clip_count.run import Model
-            model =  Model.load_from_checkpoint("clip_count/clipcount_pretrained.ckpt", strict=False).cuda()
+            model =  Model.load_from_checkpoint("clip_count/clipcount_pretrained.ckpt", strict=False).to(device)
     model.eval()
     return model
 
@@ -57,7 +58,7 @@ def prepare_counting_model(config: RunConfig):
 def prepare_clip(config: RunConfig):
     # TODO move clip version to config
     processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-    clip = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").cuda()
+    clip = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
     return clip, processor
 
 
@@ -73,7 +74,7 @@ def prepare_stable(config: RunConfig):
     )
     vae = AutoencoderKL.from_pretrained(pretrained_model_name_or_path, subfolder="vae")
     pipe = AutoPipelineForText2Image.from_pretrained(pretrained_model_name_or_path).to(
-        "cuda"
+        device
     )
     scheduler = pipe.scheduler
     del pipe

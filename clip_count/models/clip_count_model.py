@@ -13,6 +13,9 @@ from torchvision import transforms
 import einops
 import functools
 import operator
+
+device = "cuda" 
+
 class CLIPCount(nn.Module):
     def __init__(self, fim_depth:int=4, 
                  fim_num_heads:int=8,
@@ -66,7 +69,7 @@ class CLIPCount(nn.Module):
 
 
 
-        self.clip = self.clip.to('cuda')
+        self.clip = self.clip.to(device)
         if unfreeze_vit:
             # deal with some strange behavior of CLIP and pytorch-lightning.
             self.clip = self.clip.float() 
