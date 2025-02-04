@@ -57,7 +57,8 @@ def train(config: RunConfig):
 
     #### Train ####
     print(f"Start experiment {exp_identifier}")
-
+    
+    config.amount = int(float(config.amount))
     class_name = f"{config.amount} {config.clazz}"
     print(f"Start training class token for {class_name}")
     img_dir_path = f"img/{config.experiment_name}/{config.clazz}_{config.amount}_{config.seed}_{config.lr}_v1/train"
@@ -181,6 +182,14 @@ def train(config: RunConfig):
         )  # Seed generator to create the inital latent noise
         generator.manual_seed(config.seed)
         for step, batch in enumerate(train_dataloader):
+            # 在第一个step时显示显存使用情况
+            if epoch == 1 and step == 0:
+                print("\n=== GPU Memory Usage at First Training Step ===")
+                print(f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+                print(f"Cached: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+                print(f"Peak Memory: {torch.cuda.max_memory_reserved() / 1024**3:.2f} GB")
+                print("============================================\n")
+                
             # setting the generator here means we update the same images
             classification_loss = None
             with accelerator.accumulate(text_encoder):

@@ -44,13 +44,12 @@ def transform_img_tensor(image, config):
 
 def prepare_counting_model(config: RunConfig):
     model = None
-    match config.counting_model_name:
-        case "clip":
-            from transformers import CLIPModel
-            model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
-        case "clip-count":
-            from clip_count.run import Model
-            model =  Model.load_from_checkpoint("clip_count/clipcount_pretrained.ckpt", strict=False).to(device)
+    if config.counting_model_name == "clip":
+        from transformers import CLIPModel
+        model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
+    elif config.counting_model_name == "clip-count":
+        from clip_count.run import Model
+        model = Model.load_from_checkpoint("clip_count/clipcount_pretrained.ckpt", strict=False).to(device)
     model.eval()
     return model
 
@@ -67,15 +66,28 @@ def prepare_stable(config: RunConfig):
     pretrained_model_name_or_path = "stabilityai/sdxl-turbo"
 
     unet = UNet2DConditionModel.from_pretrained(
-        pretrained_model_name_or_path, subfolder="unet"
+        pretrained_model_name_or_path, 
+        subfolder="unet",
+        # force_download=True,
+        # resume_download=False
     )
     text_encoder = CLIPTextModel.from_pretrained(
-        pretrained_model_name_or_path, subfolder="text_encoder"
+        pretrained_model_name_or_path, 
+        subfolder="text_encoder",
+        # force_download=True,
+        # resume_download=False
     )
-    vae = AutoencoderKL.from_pretrained(pretrained_model_name_or_path, subfolder="vae")
-    pipe = AutoPipelineForText2Image.from_pretrained(pretrained_model_name_or_path).to(
-        device
+    vae = AutoencoderKL.from_pretrained(
+        pretrained_model_name_or_path, 
+        subfolder="vae",
+        # force_download=True,
+        # resume_download=False
     )
+    pipe = AutoPipelineForText2Image.from_pretrained(
+        pretrained_model_name_or_path,
+        # force_download=True,
+        # resume_download=False
+    ).to(device)
     scheduler = pipe.scheduler
     del pipe
     tokenizer = CLIPTokenizer.from_pretrained(
