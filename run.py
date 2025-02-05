@@ -283,6 +283,7 @@ def train(config: RunConfig):
                     classification_loss += clip_output
 
                     total_loss += classification_loss.detach().item()
+                
                 elif config.counting_model_name == 'yolo-count':
                     image = image.to(device)
                     prompt = [class_name.split()[-1]]
@@ -292,7 +293,7 @@ def train(config: RunConfig):
                         orig_output, _, counting_demo = counting_model.predict(image_inputs=image, original_hw=original_hw,
                                                                                texts=[prompt], demonstrate=True)
                     
-                    scale_factor = extract_clip_count_scale_factor(image_out.detach(), orig_output[0].detach(), yolo, yolo_image_processor, config.yolo_threshold) if config.is_dynamic_scale_factor else config.scale
+                    scale_factor = extract_clip_count_scale_factor(image_out.detach(), orig_output[0].detach(), yolo, yolo_image_processor, config.yolo_threshold) if config.is_dynamic_scale_factor else 1
                     output = torch.sum(orig_output[0] / scale_factor)
                     if classification_loss is None:
                         classification_loss = criterion(
@@ -306,7 +307,7 @@ def train(config: RunConfig):
                     inputs = {**text_inputs, "pixel_values": utils.transform_img_tensor(image, config).to(device)}
                     clip_output = (clip(**inputs)[0][0] / 100).cuda()
                     clip_output = config._lambda * (1 - clip_output)
-                    classification_loss += clip_output
+                    classification_loss = classification_loss + clip_output
                     total_loss += classification_loss.detach().item()
                     
                 # log
@@ -315,9 +316,10 @@ def train(config: RunConfig):
                     txt += f"{batch['texts']} \n"
                     txt += f"{output.item()=} \n"
                     txt += f"Loss: {classification_loss.detach().item()} \n"
-                    txt += f"Clip-Count loss: {classification_loss.detach().item() - clip_output.detach().item()} \n"
-                    txt += f"Clip loss: {clip_output.detach().item()}"
-                    with open("run_log.txt", "a") as f:
+                    txt += f"Count loss: {classification_loss.detach().item() - clip_output.detach().item()} \n"
+                    txt += f"Clip loss: {clip_output.detach().item()}\n"
+                    txt += f"Scale factor: {scale_factor}\n"
+                    with open(f"{img_dir_path}/*_run_log.txt", "a") as f:
                         print(txt, file=f)
                     print(txt)
                     utils.numpy_to_pil(
@@ -370,6 +372,10 @@ def train(config: RunConfig):
                     index_grads_to_zero, :
                 ].fill_(0)
 
+                # 打印唯一保留的梯度
+                # print(torch.norm(grads.data[placeholder_token_id, :]))
+                # import pdb; pdb.set_trace()
+                
                 if epoch == step == 0:
                     img_path = f"{img_dir_path}/actual.jpg"
                     utils.numpy_to_pil(image_out.permute(0, 2, 3, 1).cpu().detach().numpy())[0].save(img_path, "JPEG")
