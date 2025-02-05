@@ -31,6 +31,9 @@ class RunConfig:
 
     # the counting model (Options: clip-count, clip)
     counting_model_name: str = "clip-count"
+    # counting_model_name: str = "yolo-count"
+    diffusion_model_name: str = "stabilityai/sdxl-turbo"
+    # diffusion_model_name: str = "tensorart/stable-diffusion-3.5-medium-turbo"
 
     diffusion_steps: int = 1
 
@@ -54,12 +57,12 @@ class RunConfig:
     weight_decay: float = 1e-2
     eps: float = 1e-08
     max_grad_norm: str = "1"
-    seed: int = 35
+    seed: int = 42
 
     # Generative model
-    guidance_scale: int = 7
-    height: int = 512
-    width: int = 512
+    # guidance_scale: int = 7
+    height: int = 640
+    width: int = 640
 
     # Discrimnative tokens
     placeholder_token: str = "some"
@@ -80,3 +83,17 @@ class RunConfig:
 
 def __post_init__(self):
     self.output_path.mkdir(exist_ok=True, parents=True)
+
+
+class SD35MediumTurboConfig:
+    diffusion_model_name = "tensorart/stable-diffusion-3.5-medium-turbo"
+    guidance_scale = 0.0
+    diffusion_steps = 8
+    
+class SDXLTurboConfig:
+    diffusion_model_name = "stabilityai/sdxl-turbo"
+    guidance_scale = 0.0
+    diffusion_steps = 1
+    
+    
+    

@@ -33,12 +33,36 @@ import numpy as np
 import torchvision.transforms.functional as TF
 import cv2
 
-from config import RunConfig
+from config import RunConfig, SD35MediumTurboConfig, SDXLTurboConfig
 import pyrallis
 import shutil
 
+from yolo_count.utils.fn import tis, gtis
 
 def train(config: RunConfig):
+    
+    def _align_config():
+        if config.diffusion_model_name == "sdxl":
+            config.diffusion_model_name = "stabilityai/sdxl-turbo"
+        elif config.diffusion_model_name == "sd3m":
+            config.diffusion_model_name = "tensorart/stable-diffusion-3.5-medium-turbo"        
+        if config.diffusion_model_name == "stabilityai/sdxl-turbo":
+            config.diffusion_model_shortname = "sdxl"
+        elif config.diffusion_model_name == "tensorart/stable-diffusion-3.5-medium-turbo":
+            config.diffusion_model_shortname = "sd3m"        
+        if config.counting_model_name == "clip-count":
+            config.counting_model_shortname = "clipcnt"
+        elif config.counting_model_name == "yolo-count":
+            config.counting_model_shortname = "yolocnt"
+        if config.diffusion_model_name == "tensorart/stable-diffusion-3.5-medium-turbo":
+            config.guidance_scale = SD35MediumTurboConfig.guidance_scale
+            config.diffusion_steps = SD35MediumTurboConfig.diffusion_steps
+        elif config.diffusion_model_name == "stabilityai/sdxl-turbo":
+            config.guidance_scale = SDXLTurboConfig.guidance_scale
+            config.diffusion_steps = SDXLTurboConfig.diffusion_steps
+    
+    _align_config()    
+    
     os.environ['TORCH_USE_CUDA_DSA'] = "1"
     torch.autograd.set_detect_anomaly(True)
 
@@ -52,7 +76,8 @@ def train(config: RunConfig):
 
     exp_identifier = (
         f'{config.epoch_size}_{config.lr}_'
-        f"{config.seed}_{config.number_of_prompts}_{config.early_stopping}_v1"
+        f"{config.seed}_{config.number_of_prompts}_{config.early_stopping}_"
+        f"{config.diffusion_model_shortname}_{config.diffusion_steps}_{config.counting_model_shortname}_v1"
     )
 
     #### Train ####
@@ -61,19 +86,25 @@ def train(config: RunConfig):
     config.amount = int(float(config.amount))
     class_name = f"{config.amount} {config.clazz}"
     print(f"Start training class token for {class_name}")
-    img_dir_path = f"img/{config.experiment_name}/{config.clazz}_{config.amount}_{config.seed}_{config.lr}_v1/train"
+    img_dir_path = f"img/{config.experiment_name}/{config.clazz}_{config.amount}_{config.seed}_{config.lr}_{config.diffusion_model_shortname}_{config.diffusion_steps}_{config.counting_model_shortname}_v1/train"
     if Path(img_dir_path).exists():
         shutil.rmtree(img_dir_path)
     Path(img_dir_path).mkdir(parents=True, exist_ok=True)
 
     # Stable model
     pipeline = AutoPipelineForText2Image.from_pretrained(
-        "stabilityai/sdxl-turbo",
+        config.diffusion_model_name,
         torch_dtype=torch.float32
     ).to(device)
 
-    unet, vae, text_encoder, scheduler, tokenizer = pipeline.unet, pipeline.vae, pipeline.text_encoder, pipeline.scheduler, pipeline.tokenizer
-
+    vae, text_encoder, tokenizer = pipeline.vae, pipeline.text_encoder, pipeline.tokenizer
+    if hasattr(pipeline, "unet"):
+        unet = pipeline.unet
+    elif hasattr(pipeline, "transformer"):
+        unet = pipeline.transformer
+    else:
+        raise ValueError("Unsupported pipeline architecture")
+    
     #  Extend tokenizer and add a discriminative token ###
     class_infer = int(float(class_name.split()[0]))
     prompt_suffix = " ".join(class_name.lower().split("_"))
@@ -90,7 +121,6 @@ def train(config: RunConfig):
             "texts": texts,
             "input_ids": input_ids,
         }
-
         return batch
 
     train_dataset = prompt_dataset.PromptDataset(
@@ -115,6 +145,11 @@ def train(config: RunConfig):
     ## Freeze vae and unet
     utils.freeze_params(vae.parameters())
     utils.freeze_params(unet.parameters())
+    utils.freeze_params(counting_model.parameters())
+    if config.is_dynamic_scale_factor:
+        utils.freeze_params(yolo.parameters())
+    utils.freeze_params(clip.parameters())
+    
 
     ## Freeze all parameters except for the token embeddings in text encoder
     params_to_freeze = itertools.chain(
@@ -132,6 +167,7 @@ def train(config: RunConfig):
         weight_decay=config.weight_decay,
         eps=config.eps,
     )
+    
     criterion = torch.nn.L1Loss().cuda()
 
     accelerator = Accelerator(
@@ -141,6 +177,10 @@ def train(config: RunConfig):
 
     if config.gradient_checkpointing:
         text_encoder.gradient_checkpointing_enable()
+        if hasattr(pipeline, "text_encoder_2"):
+            pipeline.text_encoder_2.gradient_checkpointing_enable()
+        if hasattr(pipeline, "text_encoder_3"):
+            pipeline.text_encoder_3.gradient_checkpointing_enable()
         unet.enable_gradient_checkpointing()
 
     text_encoder, optimizer, train_dataloader = accelerator.prepare(
@@ -153,11 +193,15 @@ def train(config: RunConfig):
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
 
-    # Move vae and unet to device
+    # Move vae and unet to device and convert to appropriate dtype
     vae.to(accelerator.device, dtype=weight_dtype)
     unet.to(accelerator.device, dtype=weight_dtype)
-
-    counting_model = counting_model.to(accelerator.device)
+    
+    # 同样将counting_model转换为对应的数据类型
+    counting_model = counting_model.to(accelerator.device, dtype=weight_dtype)
+    if config.is_dynamic_scale_factor:
+        yolo = yolo.to(accelerator.device, dtype=weight_dtype)
+    clip = clip.to(accelerator.device, dtype=weight_dtype)
     text_encoder = text_encoder.to(accelerator.device)
 
     # Keep vae in eval mode as we don't train it
@@ -199,45 +243,72 @@ def train(config: RunConfig):
                 t1 = time.time()
                 # generate image
                 image = pipeline(prompt=batch['texts'][0],
-                                 num_inference_steps=1,
+                                 num_inference_steps=config.diffusion_steps,
                                  output_type="pt",
                                  height=config.height,
                                  width=config.width,
                                  generator=generator,
-                                 guidance_scale=0.0
+                                 guidance_scale=config.guidance_scale
                                  ).images[0]
-                print(f"SDXL took {(time.time() - t1) / 60} minutes")
+                print(f"SD took {(time.time() - t1)} seconds")
 
                 image = image.unsqueeze(0)
                 image_out = image
-                image = utils.transform_img_tensor(image, config).to(device)
+                
+                if config.counting_model_name == 'clip-count':
+                    image = utils.transform_img_tensor(image, config).to(device)
 
-                prompt = [class_name.split()[-1]]
+                    prompt = [class_name.split()[-1]]
 
-                with torch.cuda.amp.autocast():
-                    orig_output = counting_model(image, prompt)
+                    with torch.cuda.amp.autocast():
+                        orig_output = counting_model(image, prompt)
 
-                scale_factor = extract_clip_count_scale_factor(image_out.detach(), orig_output[0].detach(), yolo, yolo_image_processor, config.yolo_threshold) if config.is_dynamic_scale_factor else config.scale
-                output = torch.sum(orig_output[0] / scale_factor)
+                    scale_factor = extract_clip_count_scale_factor(image_out.detach(), orig_output[0].detach(), yolo, yolo_image_processor, config.yolo_threshold) if config.is_dynamic_scale_factor else config.scale
+                    output = torch.sum(orig_output[0] / scale_factor)
 
-                if classification_loss is None:
-                    classification_loss = criterion(
-                        output, torch.HalfTensor([class_infer]).cuda()
-                    ) / torch.HalfTensor([1]).cuda()
-                else:
-                    classification_loss += criterion(
-                        output, torch.HalfTensor([class_infer]).cuda()
-                    ) / torch.HalfTensor([1]).cuda()
+                    if classification_loss is None:
+                        classification_loss = criterion(
+                            output, torch.HalfTensor([class_infer]).cuda()
+                        ) / torch.HalfTensor([1]).cuda()
+                    else:
+                        classification_loss += criterion(
+                            output, torch.HalfTensor([class_infer]).cuda()
+                        ) / torch.HalfTensor([1]).cuda()
 
-                text_inputs = processor(text=prompt, return_tensors="pt", padding=True).to(accelerator.device)
-                inputs = {**text_inputs, "pixel_values": image}
-                clip_output = (clip(**inputs)[0][0] / 100).cuda()
-                clip_output = config._lambda * (1 - clip_output)
+                    text_inputs = processor(text=prompt, return_tensors="pt", padding=True).to(accelerator.device)
+                    inputs = {**text_inputs, "pixel_values": image}
+                    clip_output = (clip(**inputs)[0][0] / 100).cuda()
+                    clip_output = config._lambda * (1 - clip_output)
 
-                classification_loss += clip_output
+                    classification_loss += clip_output
 
-                total_loss += classification_loss.detach().item()
+                    total_loss += classification_loss.detach().item()
+                elif config.counting_model_name == 'yolo-count':
+                    image = image.to(device)
+                    prompt = [class_name.split()[-1]]
 
+                    with torch.cuda.amp.autocast():
+                        original_hw = [(image.shape[2], image.shape[3])]
+                        orig_output, _, counting_demo = counting_model.predict(image_inputs=image, original_hw=original_hw,
+                                                                               texts=[prompt], demonstrate=True)
+                    
+                    scale_factor = extract_clip_count_scale_factor(image_out.detach(), orig_output[0].detach(), yolo, yolo_image_processor, config.yolo_threshold) if config.is_dynamic_scale_factor else config.scale
+                    output = torch.sum(orig_output[0] / scale_factor)
+                    if classification_loss is None:
+                        classification_loss = criterion(
+                            output, torch.HalfTensor([class_infer]).cuda()
+                        ) / torch.HalfTensor([1]).cuda()
+                    else:
+                        classification_loss += criterion(
+                            output, torch.HalfTensor([class_infer]).cuda()
+                        ) / torch.HalfTensor([1]).cuda()
+                    text_inputs = processor(text=prompt, return_tensors="pt", padding=True).to(accelerator.device)
+                    inputs = {**text_inputs, "pixel_values": utils.transform_img_tensor(image, config).to(device)}
+                    clip_output = (clip(**inputs)[0][0] / 100).cuda()
+                    clip_output = config._lambda * (1 - clip_output)
+                    classification_loss += clip_output
+                    total_loss += classification_loss.detach().item()
+                    
                 # log
                 txt = f"On epoch {epoch} \n"
                 with torch.no_grad():
@@ -257,21 +328,24 @@ def train(config: RunConfig):
                     )
 
                     # counting prediction heatmap
-                    pred_density = orig_output[0].detach().cpu().numpy()
-                    pred_density = pred_density / pred_density.max()
-                    pred_density_write = 1. - pred_density
-                    pred_density_write = cv2.applyColorMap(np.uint8(255 * pred_density_write), cv2.COLORMAP_JET)
-                    pred_density_write = pred_density_write / 255.
-                    img = TF.resize(image.detach(), (384)).squeeze(0).permute(1, 2, 0).cpu().numpy()
-                    heatmap_pred = 0.33 * img + 0.67 * pred_density_write
-                    heatmap_pred = heatmap_pred / heatmap_pred.max()
-                    utils.numpy_to_pil(
-                        heatmap_pred
-                    )[0].save(
-                        f"{img_dir_path}/{epoch}_{class_name}_{classification_loss.detach().item()}_heatmap.jpg",
-                        "JPEG",
-                    )
-
+                    if config.counting_model_name == 'clip-count':
+                        pred_density = orig_output[0].detach().cpu().numpy()
+                        pred_density = pred_density / pred_density.max()
+                        pred_density_write = 1. - pred_density
+                        pred_density_write = cv2.applyColorMap(np.uint8(255 * pred_density_write), cv2.COLORMAP_JET)
+                        pred_density_write = pred_density_write / 255.
+                        img = TF.resize(image.detach(), (384)).squeeze(0).permute(1, 2, 0).cpu().numpy()
+                        heatmap_pred = 0.33 * img + 0.67 * pred_density_write
+                        heatmap_pred = heatmap_pred / heatmap_pred.max()
+                        utils.numpy_to_pil(
+                            heatmap_pred
+                        )[0].save(
+                            f"{img_dir_path}/{epoch}_{class_name}_{classification_loss.detach().item()}_heatmap.jpg",
+                            "JPEG",
+                        )
+                    elif config.counting_model_name == 'yolo-count':
+                        counting_demo.save(f"{img_dir_path}/{epoch}_{class_name}_{classification_loss.detach().item()}_counting_demo.jpg")
+                        
                 torch.nn.utils.clip_grad_norm_(
                     text_encoder.get_input_embeddings().parameters(),
                     config.max_grad_norm,
@@ -337,7 +411,7 @@ def train(config: RunConfig):
 def evaluate(config: RunConfig):
     print("Evaluation - print image with discriminatory tokens, then one without.")
     # Stable model
-    token_path = f"token/{config.experiment_name}/{config.amount} {config.clazz}/{config.epoch_size}_{config.lr}_{config.seed}_{config.number_of_prompts}_{config.early_stopping}_v1_{config.amount} {config.clazz}"
+    token_path = f"token/{config.experiment_name}/{config.amount} {config.clazz}/{config.epoch_size}_{config.lr}_{config.seed}_{config.number_of_prompts}_{config.early_stopping}_{config.diffusion_model_shortname}_{config.diffusion_steps}_{config.counting_model_shortname}_v1_{config.amount} {config.clazz}"
     loaded_embeds = torch.load(f'{token_path}/token_embeds.pt')
 
     pipe = AutoPipelineForText2Image.from_pretrained(
@@ -365,10 +439,10 @@ def evaluate(config: RunConfig):
                              height=config.height,
                              width=config.width,
                              generator=generator,
-                             guidance_scale=0.0
+                             guidance_scale=config.guidance_scale
                              ).images[0]
 
-        img_dir_path = f"img/{config.experiment_name}-eval-{config.diffusion_steps}/{config.clazz}_{config.amount}_{config.seed}_{config.lr}_v1/train"
+        img_dir_path = f"img/{config.experiment_name}-eval-{config.diffusion_steps}/{config.clazz}_{config.amount}_{config.seed}_{config.diffusion_model_shortname}_{config.diffusion_steps}_{config.counting_model_shortname}_{config.lr}_v1/train"
         Path(img_dir_path).mkdir(parents=True, exist_ok=True)
 
         utils.numpy_to_pil(
@@ -382,7 +456,7 @@ def evaluate_reuse(config: RunConfig):
     print("Evaluation - print image with discriminatory tokens, then one without.")
     # Stable model
     token_clazz = config.token_clazz if config.token_clazz else config.clazz
-    token_path = f"token/reuse-experiment/{config.amount} {token_clazz}/{config.epoch_size}_{config.lr}_35_{config.number_of_prompts}_{config.early_stopping}_v1_{config.amount} {token_clazz}"
+    token_path = f"token/reuse-experiment/{config.amount} {token_clazz}/{config.epoch_size}_{config.lr}_35_{config.number_of_prompts}_{config.early_stopping}_v1_{config.diffusion_steps}_{config.amount} {token_clazz}"
     loaded_embeds = torch.load(f'{token_path}/token_embeds.pt')
 
     pipe = AutoPipelineForText2Image.from_pretrained(
@@ -410,10 +484,10 @@ def evaluate_reuse(config: RunConfig):
                              height=config.height,
                              width=config.width,
                              generator=generator,
-                             guidance_scale=0.0
+                             guidance_scale=config.guidance_scale
                              ).images[0]
 
-        img_dir_path = f"img/{config.experiment_name}-eval-{config.diffusion_steps}/{config.clazz}_{config.amount}_{config.seed}_{config.lr}_v1/train"
+        img_dir_path = f"img/{config.experiment_name}-eval-{config.diffusion_steps}/{config.clazz}_{config.amount}_{config.seed}_{config.diffusion_model_shortname}_{config.diffusion_steps}_{config.counting_model_shortname}_{config.lr}_v1/train"
         Path(img_dir_path).mkdir(parents=True, exist_ok=True)
 
         utils.numpy_to_pil(
@@ -441,6 +515,9 @@ def run_yolo(model, image_processor, image, clazz, threshold=0.4):
     image = load_image(image)
 
     inputs = image_processor(images=image, return_tensors="pt")
+    for key, value in inputs.items():
+        if isinstance(value, torch.Tensor):
+            inputs[key] = value.to(device)
     outputs = model(**inputs)
 
     # print results
@@ -620,7 +697,7 @@ def run_controlnet(pipe, config):
     ).images[0]
 
     image.show()
-    dir_name = f"img/{config.experiment_name}/{config.clazz}_{config.amount}_{config.seed}_{config.lr}_v1/train"
+    dir_name = f"img/{config.experiment_name}/{config.clazz}_{config.amount}_{config.seed}_{config.diffusion_model_shortname}_{config.diffusion_steps}_{config.counting_model_shortname}_{config.lr}_v1/train"
     if not os.path.exists(dir_name):
         os.makedirs(dir_name)
     image.save(f"{dir_name}/optimized.jpg")

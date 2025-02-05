@@ -66,7 +66,9 @@ An overview of our method for optimizing a new discriminative token representati
 
 
 To train and evaluate use:
-`python run.py --clazz beads --amount 6 --train True  --evaluate True`
+```
+python run.py --clazz beads --amount 6 --train True  --evaluate True
+```
 
 #### Hyperparameters:
 The hyperparameters can be changed in the `config.py` script. Note that the paper results are based on [SDXL-turbo](https://huggingface.co/stabilityai/sdxl-turbo).

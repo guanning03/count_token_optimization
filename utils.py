@@ -8,6 +8,8 @@ import kornia
 from config import RunConfig
 from diffusers.models import UNet2DConditionModel, AutoencoderKL
 from diffusers.pipelines import AutoPipelineForText2Image
+from yolo_count.models.yolocount import build_yolocount_model_base
+from yolo_count.utils.fn import auto_load
 
 # From timm.data.constants
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
@@ -50,7 +52,10 @@ def prepare_counting_model(config: RunConfig):
     elif config.counting_model_name == "clip-count":
         from clip_count.run import Model
         model = Model.load_from_checkpoint("clip_count/clipcount_pretrained.ckpt", strict=False).to(device)
-    model.eval()
+    elif config.counting_model_name == 'yolo-count':
+        model_itself = build_yolocount_model_base().to(device)
+        auto_load(model_itself, "YOLO-Count/epoch_0002.pth")
+        model = model_itself.eval()
     return model
 
 
