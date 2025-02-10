@@ -307,7 +307,7 @@ def train(config: RunConfig):
                     inputs = {**text_inputs, "pixel_values": utils.transform_img_tensor(image, config).to(device)}
                     clip_output = (clip(**inputs)[0][0] / 100).cuda()
                     clip_output = config._lambda * (1 - clip_output)
-                    classification_loss = classification_loss + clip_output
+                    classification_loss = classification_loss + 0.0 * clip_output
                     total_loss += classification_loss.detach().item()
                     
                 # log
@@ -316,7 +316,7 @@ def train(config: RunConfig):
                     txt += f"{batch['texts']} \n"
                     txt += f"{output.item()=} \n"
                     txt += f"Loss: {classification_loss.detach().item()} \n"
-                    txt += f"Count loss: {classification_loss.detach().item() - clip_output.detach().item()} \n"
+                    txt += f"Count loss: {classification_loss.detach().item() - 0*clip_output.detach().item()} \n"
                     txt += f"Clip loss: {clip_output.detach().item()}\n"
                     txt += f"Scale factor: {scale_factor}\n"
                     with open(f"{img_dir_path}/*_run_log.txt", "a") as f:
@@ -372,7 +372,7 @@ def train(config: RunConfig):
                     index_grads_to_zero, :
                 ].fill_(0)
 
-                # 打印唯一保留的梯度
+                # # 打印唯一保留的梯度
                 # print(torch.norm(grads.data[placeholder_token_id, :]))
                 # import pdb; pdb.set_trace()
                 
@@ -682,6 +682,42 @@ def evaluate_experiments(config: RunConfig):
     print(f"\nSD Relevance Score: {df[df['is_clipcount']==True]['actual_relevance_score'].mean()}, Ours Relevance Score: {df[df['is_clipcount']==True]['optimized_relevance_score'].mean()}")
     print(f"\nRelevance Score: {df[df['is_clipcount']==True].groupby('amount').agg({'actual_relevance_score':'mean','optimized_relevance_score':'mean'})}")
 
+def tiny_experiment(config: RunConfig):
+    # 创建时间戳目录
+    timestamp = int(time.time())
+    exp_dir = f"img_{timestamp}"
+    Path(exp_dir).mkdir(parents=True, exist_ok=True)
+    
+    # 设置实验参数
+    config.clazz = "apples"
+    amounts = range(100, 101, 10)  # 10到100,步长为10
+    seeds = range(51, 61)  # 51到60
+    
+    start = time.time()
+    total = len(amounts) * len(seeds)
+    current = 0
+    
+    print(f"开始tiny experiment,共{total}张图片...")
+    
+    # 双重循环生成所有组合
+    for amount in amounts:
+        for seed in seeds:
+            current += 1
+            print(f"正在生成第{current}/{total}张图片: {amount} apples, seed {seed}")
+            
+            # 更新config
+            config.amount = amount
+            config.seed = seed
+            config.experiment_name = exp_dir
+            
+            try:
+                train(config)
+            except Exception as e:
+                print(f"生成失败: {amount} apples, seed {seed}, 错误: {e}")
+                continue
+    
+    print(f"Tiny experiment完成,用时: {(time.time() - start) / 3600:.2f}小时")
+    print(f"图片保存在目录: {exp_dir}")
 
 def run_controlnet(pipe, config):
     prompt = f"A photo of {config.amount} {config.clazz}"
@@ -899,3 +935,5 @@ if __name__ == "__main__":
         create_images_grid(config)
     if config.create_human_study:
         create_human_study(config)
+    if config.tiny_experiment:
+        tiny_experiment(config)

@@ -5,8 +5,8 @@ from pathlib import Path
 @dataclass
 class RunConfig:
     # Exp setup
-    train: bool
-    evaluate: bool
+    train: bool = False
+    evaluate: bool = False
     experiment: bool = False
     evaluate_experiment: bool = False
     experiment_name: str = False
@@ -14,6 +14,7 @@ class RunConfig:
     evaluate_token_reuse: bool = False
     create_images_grid: bool = False
     create_human_study: bool = False
+    tiny_experiment: bool = False
 
     amount: float = 7
     clazz: str = "oranges"
@@ -30,8 +31,8 @@ class RunConfig:
     exp_id: str = "demo"
 
     # the counting model (Options: clip-count, clip)
-    counting_model_name: str = "clip-count"
-    # counting_model_name: str = "yolo-count"
+    # counting_model_name: str = "clip-count"
+    counting_model_name: str = "yolo-count"
     diffusion_model_name: str = "stabilityai/sdxl-turbo"
     # diffusion_model_name: str = "tensorart/stable-diffusion-3.5-medium-turbo"
 
